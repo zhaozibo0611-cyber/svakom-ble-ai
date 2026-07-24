@@ -18,7 +18,7 @@ function auth(req) {
 // MCP工具：AI调用来设置指令
 app.post('/toy-next', (req, res) => {
  if (!auth(req)) return res.status(403).json({ error: 'forbidden' });
- const { speed, pattern level, stop, sec } = req.body || {};
+ const { speed, pattern, level, stop, sec } = req.body || {};
  if (stop) {
  pendingCmd = { stop: true };
  } else if (pattern !== undefined) {
