@@ -1,53 +1,20 @@
 import express from 'express';
+import fetch from 'node-fetch';
 
 const app = express();
 app.use(express.json());
 
 const SECRET = process.env.BRIDGE_SECRET || 'zz0602';
+const VERCEL_URL = process.env.VERCEL_URL || 'https://phone-status-zeta.vercel.app';
 const PORT = process.env.PORT || 3000;
-
-let pendingCmd = null;
-let lastSeen = null;
 
 function auth(req) {
  const s = req.query.secret || req.headers['x-secret'];
  return s === SECRET;
 }
 
-// 手动控制接口
-app.post('/toy-next', (req, res) => {
- if (!auth(req)) return res.status(403).json({ error: 'forbidden' });
- const { speed, pattern, level, stop, sec } = req.body || {};
- if (stop) {
- pendingCmd = { stop: true };
- } else if (pattern !== undefined) {
- pendingCmd = { pattern, level: level || 0.6 };
- } else if (speed !== undefined) {
- pendingCmd = { speed, sec };
- }
- res.json({ ok: true });
-});
-
-// toy.html轮询
-app.get('/toy-poll', (req, res) => {
- lastSeen = Date.now();
- if (pendingCmd) {
- const cmd = pendingCmd;
- pendingCmd = null;
- return res.json({ cmd });
- }
- res.json({});
-});
-
-// 状态查询
-app.get('/toy-status', (req, res) => {
- if (!auth(req)) return res.status(403).json({ error: 'forbidden' });
- const online = lastSeen && (Date.now() - lastSeen < 5000);
- res.json({ online: !!online, lastSeen });
-});
-
 // MCP接口
-app.post('/mcp', (req, res) => {
+app.post('/mcp', async (req, res) => {
  const body = req.body || {};
  const { method, id } = body;
 
@@ -57,7 +24,7 @@ app.post('/mcp', (req, res) => {
  result: {
  protocolVersion: '2024-11-05',
  capabilities: { tools: {} },
- serverInfo: { name: 'toy控制', version: '1.0.0' }
+ serverInfo: { name: 'toy控制', version: '2.0.0' }
  }
  });
  }
@@ -109,26 +76,37 @@ app.post('/mcp', (req, res) => {
  if (method === 'tools/call') {
  const toolName = body.params?.name;
  const toolArgs = body.params?.arguments || {};
+ let cmd = null;
+ let text = '';
 
  if (toolName === 'toy_set_speed') {
- pendingCmd = { speed: toolArgs.speed, sec: toolArgs.sec };
- return res.json({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `已设置强度${Math.round(toolArgs.speed * 100)}%` }] } });
+ cmd = { speed: toolArgs.speed, sec: toolArgs.sec };
+ text = `已设置强度${Math.round(toolArgs.speed * 100)}%`;
+ } else if (toolName === 'toy_set_pattern') {
+ cmd = { pattern: toolArgs.pattern, level: toolArgs.level || 0.6 };
+ text = `已设置花样${toolArgs.pattern}`;
+ } else if (toolName === 'toy_stop') {
+ cmd = { stop: true };
+ text = '已发送停止指令';
+ } else if (toolName === 'toy_status') {
+ try {
+ const r = await fetch(`${VERCEL_URL}/api/cmd`);
+ text = '✅ 中继在线，toy已连接';
+ } catch(e) {
+ text = '❌ 中继不在线或toy未连接';
+ }
+ return res.json({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
  }
 
- if (toolName === 'toy_set_pattern') {
- pendingCmd = { pattern: toolArgs.pattern, level: toolArgs.level || 0.6 };
- return res.json({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `已设置花样${toolArgs.pattern}` }] } });
+ if (cmd) {
+ await fetch(`${VERCEL_URL}/api/cmd`, {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify(cmd)
+ });
  }
 
- if (toolName === 'toy_stop') {
- pendingCmd = { stop: true };
- return res.json({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: '已发送停止指令' }] } });
- }
-
- if (toolName === 'toy_status') {
- const online = lastSeen && (Date.now() - lastSeen < 5000);
- return res.json({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: online ? '✅ 中继在线，toy已连接' : '❌ 中继不在线或toy未连接' }] } });
- }
+ return res.json({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
  }
 
  return res.json({ jsonrpc: '2.0', id, result: {} });
